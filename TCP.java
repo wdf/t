@@ -1,12 +1,15 @@
-import javax.crypto.Cipher;
-import javax.crypto.SecretKey;
+import sun.misc.BASE64Decoder;
+import sun.misc.BASE64Encoder;
+
+import javax.crypto.*;
+import javax.crypto.spec.DESKeySpec;
 import javax.crypto.spec.SecretKeySpec;
-import java.io.BufferedInputStream;
-import java.io.InputStream;
-import java.io.OutputStream;
+import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.security.Security;
+import java.security.InvalidKeyException;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
 
 public class TCP {
     public static void main(String args[]) throws Exception {
@@ -14,7 +17,11 @@ public class TCP {
         String address = localhost;
         int port = 8333;
         int listen = 3333;
+        byte[] key = new byte[] { 49, 38, -88, -75, 103, -50, 94, -92 };
         boolean encryption = false;
+
+//        args = new String[]{"127.0.0.1:8443"};
+//        args = new String[]{"8333", "8443"};
 
         if (args.length > 0) {
             String[] as = args[0].split(":");
@@ -27,11 +34,11 @@ public class TCP {
             }
         }
         if (args.length > 1) {
-            listen = Integer.parseInt(args[2]);
+            listen = Integer.parseInt(args[1]);
         }
-        if (localhost.equals(address)) {
-            encryption = true;
-        }
+//        if (localhost.equals(address)) {
+//            encryption = true;
+//        }
         if (port == listen) {
             System.out.println("port and listen equals");
             return;
@@ -45,13 +52,13 @@ public class TCP {
             try {
                 System.out.println("客户端：" + connectionSocket.getInetAddress().getHostName() + " - " + id);
                 Socket clientSocket = new Socket(address, port);
-                Thread server = new ThreadedTCP(connectionSocket, clientSocket, id, !encryption); //密文-明文
-                Thread client = new ThreadedTCP(clientSocket, connectionSocket, id, encryption);//明文-密文
+                Thread server = new ThreadedTCP(connectionSocket, clientSocket, id, encryption,key); //密文-明文
+                Thread client = new ThreadedTCP(clientSocket, connectionSocket, id, !encryption,key);//明文-密文
                 id++;
                 server.start();
                 client.start();
             } catch (Exception ex) {
-                if(connectionSocket.isConnected()){
+                if (connectionSocket.isConnected()) {
                     connectionSocket.close();
                 }
             }
@@ -63,48 +70,43 @@ class ThreadedTCP extends Thread {
     boolean encryption;
     Socket fromSocket;
     Socket toSocket;
+    byte[] key;
     int counter;
-    int size = 9022386;
+    int size = 10240;
 
-    public ThreadedTCP(Socket from, Socket to, int c, boolean enc) {
+    public ThreadedTCP(Socket from, Socket to, int c, boolean enc,byte[] k) {
         fromSocket = from;
         toSocket = to;
         encryption = enc;
         counter = c;
+        key = k;
     }
 
     public void run() {
         try {
             InputStream in = fromSocket.getInputStream();
-            OutputStream output = toSocket.getOutputStream();
+            OutputStream out = toSocket.getOutputStream();
             boolean complete = true;
             byte[] data = new byte[size];
-            while (complete) {
-                int c = in.read(data, 0, data.length);
-                if (c == -1) {
-                    complete = false;
-                    if (toSocket.isConnected()) {
-                        toSocket.close();
-                    }
-                    System.out.println("客户端退出");
-                } else {
-                    System.out.println(encryption);
-                    if (encryption) {
-                        data = Encryption.encryptMode(data);
-                    } else {
-                        data = Encryption.decryptMode(data);
-                    }
-                    output.write(data, 0, c);
-                    output.flush();
-                }
+            if (encryption) {
+                System.out.println("加密");
+                Encryption.encrypt(in,out,key);
+            } else {
+                System.out.println("解密");
+                Encryption.decrypt(in,out,key);
+            }
+            System.out.println("客户端退出");
+            if (toSocket.isConnected()) {
+                toSocket.close();
             }
         } catch (Exception ex) {
-            System.out.println(ex.getMessage());
+            ex.printStackTrace();
+            System.out.println("error:"+ex.getMessage());
         }
     }
 
     private static void sendBytes(BufferedInputStream in, OutputStream out) throws Exception {
-        int size = 9022386;
+        int size = 10240;
         byte[] data = new byte[size];
         int bytes = 0;
         int c = in.read(data, 0, data.length);
@@ -114,130 +116,60 @@ class ThreadedTCP extends Thread {
 }
 
 class Encryption {
-    static {
-        Security.addProvider(new com.sun.crypto.provider.SunJCE());
+    private static String Algorithm = "DES";
+    public static byte[] getKey() throws Exception {
+        KeyGenerator keygen = KeyGenerator.getInstance(Algorithm);
+        keygen.init(new SecureRandom());
+        SecretKey deskey = keygen.generateKey();
+        return deskey.getEncoded();
     }
+    public static void encrypt(InputStream in , OutputStream out, byte[] key)
+            throws Exception {
+        // 秘密（对称）密钥(SecretKey继承(key))
+        // 根据给定的字节数组构造一个密钥。
+        SecretKey deskey = new SecretKeySpec(key, Algorithm);
+        // 生成一个实现指定转换的 Cipher 对象。Cipher对象实际完成加解密操作
+        Cipher c = Cipher.getInstance(Algorithm);
+        // 用密钥初始化此 cipher
+        c.init(Cipher.ENCRYPT_MODE, deskey);
 
-    static final byte[] keyBytes = {0x11, 0x22, 0x4F, 0x58,
+        byte[] buffer = new byte[10240];
 
-            (byte) 0x88, 0x10, 0x40, 0x38, 0x28, 0x25, 0x79, 0x51,
-
-            (byte) 0xCB, (byte) 0xDD, 0x55, 0x66, 0x77, 0x29, 0x74,
-
-            (byte) 0x98, 0x30, 0x40, 0x36, (byte) 0xE2
-
-    };
-    private static final String Algorithm = "DESede"; // 定义 加密算法,可用
-    // DES,DESede,Blowfish
-
-    // keybyte为加密密钥，长度为24字节
-
-    // src为被加密的数据缓冲区（源）
-    public static byte[] encryptMode(byte[] src) {
-        return encryptMode(keyBytes, src);
-    }
-
-    public static byte[] encryptMode(byte[] keyBytes, byte[] src) {
-
-        try {
-
-            // 生成密钥
-
-            SecretKey deskey = new SecretKeySpec(keyBytes, Algorithm);
-
-            // 加密
-
-            Cipher c1 = Cipher.getInstance(Algorithm);
-
-            c1.init(Cipher.ENCRYPT_MODE, deskey);
-
-            return c1.doFinal(src);
-
-        } catch (java.security.NoSuchAlgorithmException e1) {
-
-            e1.printStackTrace();
-
-        } catch (javax.crypto.NoSuchPaddingException e2) {
-
-            e2.printStackTrace();
-
-        } catch (java.lang.Exception e3) {
-
-            e3.printStackTrace();
-
+        CipherInputStream cin = new CipherInputStream(in, c);
+        int i;
+        while ((i = cin.read(buffer)) != -1) {
+            out.write(buffer, 0, i);
         }
-
-        return null;
-
+        out.close();
+        cin.close();
     }
 
-    // keybyte为加密密钥，长度为24字节
+    // 解密
+    public static void decrypt(InputStream in , OutputStream out, byte[] key)
+            throws Exception {
 
-    // src为加密后的缓冲区
+        // DES算法要求有一个可信任的随机数源
+        SecureRandom sr = new SecureRandom();
+        // 创建一个 DESKeySpec 对象,指定一个 DES 密钥
+        DESKeySpec ks = new DESKeySpec(key);
+        // 生成指定秘密密钥算法的 SecretKeyFactory 对象。
+        SecretKeyFactory factroy = SecretKeyFactory.getInstance(Algorithm);
+        // 根据提供的密钥规范（密钥材料）生成 SecretKey 对象,利用密钥工厂把DESKeySpec转换成一个SecretKey对象
+        SecretKey sk = factroy.generateSecret(ks);
+        // 生成一个实现指定转换的 Cipher 对象。Cipher对象实际完成加解密操作
+        Cipher c = Cipher.getInstance(Algorithm);
+        // 用密钥和随机源初始化此 cipher
+        c.init(Cipher.DECRYPT_MODE, sk, sr);
 
-    public static byte[] decryptMode(byte[] src) {
-        return decryptMode(keyBytes, src);
-    }
-
-    public static byte[] decryptMode(byte[] keyBytes, byte[] src) {
-
-        try {
-
-            // 生成密钥
-
-            SecretKey deskey = new SecretKeySpec(keyBytes, Algorithm);
-
-            // 解密
-
-            Cipher c1 = Cipher.getInstance(Algorithm);
-
-            c1.init(Cipher.DECRYPT_MODE, deskey);
-
-            return c1.doFinal(src);
-
-        } catch (java.security.NoSuchAlgorithmException e1) {
-
-            e1.printStackTrace();
-
-        } catch (javax.crypto.NoSuchPaddingException e2) {
-
-            e2.printStackTrace();
-
-        } catch (java.lang.Exception e3) {
-
-            e3.printStackTrace();
-
+        byte[] buffer = new byte[1024];
+        CipherOutputStream cout = new CipherOutputStream(out, c);
+        int i;
+        while ((i = in.read(buffer)) != -1) {
+            cout.write(buffer, 0, i);
         }
-
-        return null;
-
+        cout.close();
+        in.close();
     }
 
-    // 转换成十六进制字符串
-
-    public static String byte2hex(byte[] b) {
-
-        String hs = "";
-
-        String stmp = "";
-
-        for (int n = 0; n < b.length; n++) {
-
-            stmp = (java.lang.Integer.toHexString(b[n] & 0XFF));
-
-            if (stmp.length() == 1)
-                hs = hs + "0" + stmp;
-
-            else
-                hs = hs + stmp;
-
-            if (n < b.length - 1)
-                hs = hs + ":";
-
-        }
-
-        return hs.toUpperCase();
-
-    }
 
 }
